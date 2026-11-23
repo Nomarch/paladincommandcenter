@@ -42,7 +42,7 @@ function coachBriefing(s){
   '','Custom objectives the player added:',s.objectives.filter(o=>o.custom).map(o=>'- '+(o.done?'[done] ':'')+o.title).join('\n')||'- none',
   '','Completed objectives:',s.objectives.filter(o=>o.done).slice(0,30).map(o=>'- '+o.title).join('\n')||'- none',
   '','Recent journal entries (newest first):',recent||'- none',
-  '','App sources, checked '+reviewed+' (a dated snapshot, not a live patch feed):',sources.map(x=>'- '+x.title+' ('+x.publisher+'): '+x.note).join('\n'),
+  '','App sources, checked '+reviewed+' (a dated snapshot, not a live patch feed):',sources.map(x=>'- '+x.title+' ('+x.publisher+') '+x.url+' : '+x.note).join('\n'),
   '','Today is '+new Date().toISOString().slice(0,10)+'.'].join('\n').slice(0,24000);
 }
 async function readState(db,owner,env={}){
@@ -54,6 +54,23 @@ async function readState(db,owner,env={}){
  return {profile:c?JSON.parse(c.data):null,revision:c?.revision??0,updatedAt:c?.updated_at??null,objectives:os.results,history:hs.results,screenshots:ss.results,coach:await coachState(db,owner,env)};
 }
 function event(db,owner,kind,summary,detail,now=new Date().toISOString()){return db.prepare('INSERT INTO events(id,owner,kind,summary,detail,created_at) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,kind,summary,JSON.stringify(detail),now)}
+// Turns the AI's transcription into a profile-shaped patch: only valid values that differ from what is saved.
+function readingPatch(d,p){
+ const patch={},str=(v,max)=>typeof v==='string'?v.trim().slice(0,max):'';
+ for(const [k,max] of [['name',60],['realm',300],['zone',300],['talents',6000]]){const v=str(d[k],max);if(v&&v!==p[k])patch[k]=v}
+ if(Number.isInteger(d.level)&&d.level>=1&&d.level<=60&&d.level!==p.level)patch.level=d.level;
+ for(const k of numericFields){if(k==='trainedAt')continue;let v=d[k];if(typeof v!=='number'||!Number.isFinite(v)||v<0||v>100000000)continue;
+  if(k==='unspentTalents'){if(!Number.isInteger(v)||v>60)continue}else v=Math.round(v*10000)/10000;
+  if(v!==p[k])patch[k]=v}
+ if(patch.xp!==undefined||patch.xpMax!==undefined){const xp=patch.xp??p.xp,max=patch.xpMax??p.xpMax;if(xp!==null&&max!==null&&(max===0||xp>=max)){delete patch.xp;delete patch.xpMax}}
+ if(Array.isArray(d.abilities)){const have=new Set(p.abilities.toLowerCase().split(/[\n,]/).map(x=>x.trim()).filter(Boolean)),seen=new Set(),add=[];
+  for(const a of d.abilities){const v=str(a,100).replace(/\s+/g,' ');if(v&&!have.has(v.toLowerCase())&&!seen.has(v.toLowerCase())){seen.add(v.toLowerCase());add.push(v)}}
+  const next=[p.abilities,...add.slice(0,60)].filter(Boolean).join('\n');if(add.length&&next.length<=6000)patch.abilities=next}
+ if(Array.isArray(d.gear)){const gear={};
+  for(const g of d.gear){const item=str(g?.item,300);if(g&&gearSlots.includes(g.slot)&&item&&item!==(p.gear?.[g.slot]||''))gear[g.slot]=item}
+  if(Object.keys(gear).length)patch.gear=gear}
+ return patch;
+}
 async function api(request,env){
  const owner=request.headers.get('oai-authenticated-user-id');
  if(!owner||!request.headers.get('oai-authenticated-user-email'))throw new ApiError(401,'This request has no owner identity. Open the app from the local server.');
@@ -84,6 +101,27 @@ async function api(request,env){
  if(request.method==='POST'&&path==='/api/journal'){
   const b=await readBody(request);if(typeof b.note!=='string'||!b.note.trim()||b.note.length>6000||b.kind&&!['note','coaching'].includes(b.kind))throw new ApiError(400,'Enter a note of 1–6,000 characters.');
   await event(db,owner,b.kind||'note',b.kind==='coaching'?'AI coaching note · unverified':'Field note',{note:b.note.trim()}).run();return json(await readState(db,owner,env));
+ }
+ if(request.method==='POST'&&path==='/api/screenshots/read'){
+  const bucket=env.BUCKET;if(!bucket)throw new ApiError(503,'Screenshot storage is unavailable.');
+  if(typeof env.COACH?.read!=='function')throw new ApiError(503,'Screenshot reading needs the AI coach. Add ANTHROPIC_API_KEY to the .env file in the app folder, then restart the app.');
+  const row=await db.prepare('SELECT object_key,name,mime,size FROM screenshots WHERE id=? AND owner=?').bind(new URL(request.url).searchParams.get('id')||'',owner).first();
+  if(!row)throw new ApiError(404,'Screenshot not found.');
+  if(row.size>3.5*1024*1024)throw new ApiError(400,'This screenshot is over 3.5 MB, too large for the AI to read. Save it as a JPEG or crop it, then upload again.');
+  if(coachPending.has(owner))throw new ApiError(409,'Another AI request is still running. Wait for it to finish.');
+  coachPending.add(owner);
+  try{
+   const s=await readState(db,owner,env);if(!s.profile)throw new ApiError(400,'Set up your character first.');
+   if(s.coach.usedToday>=s.coach.dailyLimit)throw new ApiError(429,'You have used today\'s '+s.coach.dailyLimit+' AI requests. The limit resets at midnight.');
+   const image=await bucket.get(row.object_key);if(!image)throw new ApiError(404,'Screenshot not found.');
+   await db.prepare('INSERT INTO coach_messages(id,owner,role,content,model,created_at) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,'attempt','screenshot',null,new Date().toISOString()).run();
+   let result;
+   try{result=await env.COACH.read({bytes:image.body,mime:row.mime})}
+   catch(e){if(e&&e.expose&&Number.isInteger(e.status))throw new ApiError(e.status,e.message);console.error('Screenshot read failed:',e);throw new ApiError(502,'The AI could not read this screenshot. Try again shortly.')}
+   const d=result?.data&&typeof result.data==='object'?result.data:{};
+   const str=(v,max)=>typeof v==='string'?v.trim().slice(0,max):'';
+   return json({reading:{screenshotId:new URL(request.url).searchParams.get('id'),name:row.name,seen:str(d.seen,300),notes:str(d.notes,1000),patch:readingPatch(d,s.profile)},state:await readState(db,owner,env)});
+  }finally{coachPending.delete(owner)}
  }
  if(path==='/api/screenshots'){
   const bucket=env.BUCKET;if(!bucket)throw new ApiError(503,'Screenshot storage is unavailable.');const id=new URL(request.url).searchParams.get('id')||'';
@@ -123,7 +161,7 @@ async function api(request,env){
    if(s.coach.usedToday>=s.coach.dailyLimit)throw new ApiError(429,'You have used today\'s '+s.coach.dailyLimit+' coaching questions. The limit resets at midnight.');
    let history=s.coach.messages.slice(-20).map(m=>({role:m.role,content:m.content}));
    while(history.length&&history[0].role!=='user')history.shift();
-   // Every call to the AI service counts toward the daily cap, whether or not it succeeds.
+   // Every question counts toward the daily cap, whether or not it succeeds (a web lookup may take 2 API requests).
    await db.prepare('INSERT INTO coach_messages(id,owner,role,content,model,created_at) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),owner,'attempt','',null,new Date().toISOString()).run();
    const asked=new Date().toISOString();let answer;
    try{answer=await env.COACH({briefing:coachBriefing(s),history,question})}

@@ -39,9 +39,11 @@ From a terminal instead (any OS):
 ## AI coach
 
 - Model **Claude Sonnet 5.5** (`claude-sonnet-5-5`) at **medium** effort. Both are fixed in `server/coach.mjs`. The only setting allowed is `PALADIN_COACH_EFFORT=low`, which makes answers cheaper. Anything else falls back to medium.
+- **Web lookups:** the coach can search the web and open pages (Blizzard's pages and established guide sites are preferred) to answer questions about the current game, and lists its sources under each answer. A question makes at most two requests to the AI service (the second only when a lookup runs long), each limited to 5 searches and 5 page reads, so the ceiling is 10 of each per question. Anthropic bills web searches separately from tokens, and answers that search take longer and use more tokens. Set `PALADIN_COACH_WEB=off` in `.env` to turn this off.
 - If Sonnet 5.5 declines a question for safety reasons, the API's built-in fallback retries it on Claude Sonnet 5. No Opus or Fable model is ever called.
 - Each question sends your saved character sheet, the open objectives, recent journal entries and the dated source list, plus the last 20 messages of the current conversation. Up to 8,000 output tokens are allowed per answer.
-- Daily cap: 40 calls to the AI service per day (`COACH_DAILY_LIMIT` in `.env`), counting failed and declined questions too. Only one question runs at a time. It resets at local midnight. "New conversation" clears the view but still counts toward the cap.
+- Daily cap: 40 questions and screenshot reads per day (`COACH_DAILY_LIMIT` in `.env`), counting failed and declined ones too. A question that searches the web still counts as one, although it can make two requests and costs more than a plain answer. Only one question runs at a time. It resets at local midnight. "New conversation" clears the view but still counts toward the cap.
+- **Read stats from a screenshot:** on *Character & gear*, upload a screenshot of your character sheet, talents or spellbook and press **Read stats**. The image is sent to the same model, which transcribes what is visible. You review each value and choose what to save; nothing is saved automatically. Each read counts as one of the day's AI calls. Screenshots over 3.5 MB cannot be read. The app never touches the game itself.
 - Answers are labeled *AI coaching · verify in game*. Use **Save to journal** to keep useful advice with your history.
 - Cost depends on Anthropic's current Sonnet 5.5 price and on how long the conversation runs. Check your usage in the Anthropic Console.
 
@@ -51,7 +53,7 @@ From a terminal instead (any OS):
 - Character stats, XP, gear, talents, abilities, gold, professions, quests, mount status, and notes.
 - Three prioritized actions, persistent checkboxes, completed objectives, and change history.
 - Level- and character-aware combat, talent, zone, profession, weapon, and mount guidance (rule-based, transparent).
-- Screenshot uploads (PNG, JPEG or WebP, up to 8 MB, checked by file signature).
+- Screenshot uploads (PNG, JPEG or WebP, up to 8 MB, checked by file signature), with AI reading of stats, gear, talents and abilities into a reviewable update.
 - Natural-language progress updates, with a review step before anything is saved.
 - A dated sourcebook that separates Forever facts from uncertain Classic references.
 
