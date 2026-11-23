@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import path from 'node:path';
+import os from 'node:os';
 import {bindings} from '../scripts/local-bindings.mjs';
 import worker from '../dist/server/index.js';
-const dir=path.resolve('.sites-runtime/tests-'+Date.now());let env=bindings(dir);
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'paladin-native-'));let env=bindings(dir);
 const domain=vm.createContext({});vm.runInContext(fs.readFileSync('src/domain.js','utf8')+';globalThis.rules={buildPlan,rotation,parseProgress,currentRoute,talentAdvice};',domain);
 const profile={name:'QA Paladin',realm:'QA realm',level:6,zone:'Elwynn Forest',xp:100,xpMax:1000,gold:0,strength:null,agility:null,stamina:null,intellect:null,spirit:null,health:null,mana:null,attackPower:null,armor:null,weaponDps:null,weaponSpeed:null,trainedAt:null,unspentTalents:null,abilities:'Holy Light\nJudgement',talents:'',legacy:'',professions:[],gear:{},mount:'unknown',notes:'',solo:true};
 async function call(route,method='GET',body,owner='qa-owner',origin='https://test.local'){

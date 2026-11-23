@@ -1,1 +1,19 @@
-{"name":"paladin-command-center","version":"1.0.0","private":true,"type":"module","scripts":{"build":"node scripts/build-native.mjs","dev":"node scripts/preview-native.mjs","test":"node --test tests/native.test.mjs"}}
+{
+  "name": "paladin-command-center",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-native.mjs",
+    "start": "node scripts/build-native.mjs && node server/local.mjs --open",
+    "serve": "node server/local.mjs",
+    "test": "node scripts/build-native.mjs && node --test \"tests/*.test.mjs\""
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.12.0"
+  },
+  "description": "Private, local World of Warcraft Forever leveling companion with Claude AI coaching",
+  "engines": {
+    "node": ">=22.13"
+  }
+}

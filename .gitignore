@@ -43,3 +43,7 @@ yarn-error.log*
 
 # OS metadata
 .DS_Store
+
+# Local app data (SQLite database and screenshots)
+/data/
+!.env.example
