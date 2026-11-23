@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
+const read=p=>fs.readFileSync(p,'utf8');
+const client=read('src/domain.js')+'\n'+read('src/client.js');
+const html='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101922"><title>Paladin Command Center</title><meta name="description" content="Your private WoW Forever leveling companion"><link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css"><script src="/icons.js" defer></script><script src="/app.js" defer></script></head><body><div id="app"><div class="loading-state"><h1>Paladin Command Center</h1><p>Opening your command center…</p></div></div><div id="dialogs"></div><div id="notifications" aria-live="polite"></div></body></html>';
+const assets={'/index.html':{body:html,type:'text/html; charset=utf-8'},'/app.js':{body:client,type:'text/javascript; charset=utf-8'},'/style.css':{body:read('app/globals.css').replace('@import "tailwindcss";',''),type:'text/css; charset=utf-8'},'/icons.js':{body:read('public/lucide.min.js'),type:'text/javascript; charset=utf-8'},'/favicon.svg':{body:read('public/favicon.svg'),type:'image/svg+xml'}};
+fs.mkdirSync('dist/server',{recursive:true});fs.mkdirSync('dist/.openai',{recursive:true});
+fs.writeFileSync('dist/server/index.js','const ASSETS='+JSON.stringify(assets)+';\n'+read('src/domain.js')+'\n'+read('src/server.js'));
+fs.copyFileSync('.openai/hosting.json','dist/.openai/hosting.json');
+fs.cpSync('drizzle','dist/.openai/drizzle',{recursive:true});
+fs.writeFileSync('dist/.openai/build-info.json',JSON.stringify({framework:'worker-esm',migrations:'drizzle',builtAt:new Date().toISOString()}));
+console.log('Built self-contained Worker with durable D1 schema and R2 uploads.');

@@ -1,0 +1,1 @@
+{"name":"paladin-command-center","version":"1.0.0","private":true,"type":"module","scripts":{"build":"node scripts/build-native.mjs","dev":"node scripts/preview-native.mjs","test":"node --test tests/native.test.mjs"}}
