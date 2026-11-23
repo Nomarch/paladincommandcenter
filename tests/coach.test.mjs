@@ -241,16 +241,19 @@ test('screenshot reading: proposes only valid, changed values and saves nothing 
 
 test('screenshot reader sends the image to Sonnet 5.5 at medium effort with a JSON schema',async()=>{
  let mode='ok';
- const api=await fakeApi(()=>mode==='refuse'?[200,message({content:[],stop_reason:'refusal',stop_details:{type:'refusal',category:'general_harms',explanation:'x'}})]:mode==='garbage'?[200,message({content:[{type:'text',text:'not json'}]})]:[200,message({content:[{type:'thinking',thinking:'',signature:'s'},{type:'text',text:JSON.stringify(reading({level:22}))}]})]);
+ const api=await fakeApi(()=>mode==='refuse'?[200,message({content:[],stop_reason:'refusal',stop_details:{type:'refusal',category:'general_harms',explanation:'x'}})]:mode==='garbage'?[200,message({content:[{type:'text',text:'not json'}]})]:[200,message({content:[{type:'thinking',thinking:'',signature:'s'},{type:'text',text:JSON.stringify({seen:'Character sheet',notes:'',name:'',realm:'',zone:'Westfall',talents:'',stats:[{field:'level',value:22},{field:'gold',value:4.5},{field:'level',value:99},{field:'bogus',value:1}],abilities:[],gear:[]})}]})]);
  try{
   const coach=createCoach({apiKey:'sk-ant-test',baseURL:api.url});
   const out=await coach.read({bytes:PNG,mime:'image/png'});
-  assert.equal(out.data.level,22);assert.equal(out.model,'claude-sonnet-5-5');
+  assert.equal(out.data.level,22);assert.equal(out.data.gold,4.5);assert.equal(out.data.zone,'Westfall');assert.equal(out.data.stats,undefined);assert.equal(out.data.bogus,undefined);assert.equal(out.model,'claude-sonnet-5-5');
   const b=api.requests[0].body;
   assert.equal(b.model,'claude-sonnet-5-5');assert.equal(b.output_config.effort,'medium');assert.equal(b.fallbacks,'default');
   assert.equal(b.output_config.format.type,'json_schema');
   const sch=b.output_config.format.schema;assert.equal(sch.additionalProperties,false);
   assert.deepEqual([...sch.required].sort(),Object.keys(sch.properties).sort());
+  // The API rejects schemas with more than 16 union-typed parameters; this schema uses none.
+  const unions=[];(function walk(n,at){if(!n||typeof n!=='object')return;if(Array.isArray(n.type)||n.anyOf||n.oneOf)unions.push(at);for(const [k,v] of Object.entries(n))walk(v,at+'.'+k)})(sch,'schema');
+  assert.deepEqual(unions,[]);
   assert.deepEqual(b.messages[0].content[0],{type:'image',source:{type:'base64',media_type:'image/png',data:PNG.toString('base64')}});
   assert.equal(b.messages[0].content[1].type,'text');
   for(const banned of ['thinking','temperature','top_p','top_k','tool_choice'])assert.equal(b[banned],undefined,banned);
