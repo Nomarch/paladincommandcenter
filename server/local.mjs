@@ -60,7 +60,7 @@ server.listen(port,'127.0.0.1',()=>{
  const url='http://127.0.0.1:'+port;
  console.log('Paladin Command Center is running at '+url);
  console.log('Data folder: '+dataDir);
- console.log(coach?'AI coach: on ('+coach.config.model+', effort '+coach.config.effort+')':'AI coach: off (add ANTHROPIC_API_KEY to .env and restart)');
+ console.log(coach?'AI coach: on ('+coach.config.model+', effort '+coach.config.effort+')'+(coach.config.web?', web search on':', web search off'):'AI coach: off (add ANTHROPIC_API_KEY to .env and restart)');
  console.log('Press Ctrl+C to stop.');
  if(process.argv.includes('--open'))openBrowser(url);
 });

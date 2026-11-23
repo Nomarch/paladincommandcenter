@@ -115,7 +115,7 @@ test('coach sends Sonnet 5.5 at medium effort with Sonnet-only fallback, and han
   const coach=createCoach({apiKey:'sk-ant-test',baseURL:api.url});
   assert.equal(coach.config.effort,'medium');
   const out=await coach({briefing:'LEVEL 14 PALADIN',history:[{role:'user',content:'earlier q'},{role:'assistant',content:'earlier a'}],question:'What now?'});
-  assert.equal(out.text,'Train Holy Strike rank 2.');assert.equal(out.model,'claude-sonnet-5-5');assert.deepEqual(out.usage,{input:900,output:120});
+  assert.equal(out.text,'Train Holy Strike rank 2.\n\n_(Answered without a web lookup.)_');assert.equal(out.model,'claude-sonnet-5-5');assert.deepEqual(out.usage,{input:900,output:120});
   const req=api.requests[0];
   assert.equal(req.url.split('?')[0],'/v1/messages');
   assert.equal(req.body.model,'claude-sonnet-5-5');assert.equal(COACH_MODEL,'claude-sonnet-5-5');
@@ -189,8 +189,110 @@ test('local server reports the coach as on when a key is configured',async()=>{
  const port=47000+Math.floor(Math.random()*1000);
  const srv=await startServer(port,path.join(tmp,'server-key'),{ANTHROPIC_API_KEY:'sk-ant-test-not-used'});
  try{
-  assert.match(srv.output(),/AI coach: on \(claude-sonnet-5-5, effort medium\)/);
+  assert.match(srv.output(),/AI coach: on \(claude-sonnet-5-5, effort medium\), web search on/);
   const c=JSON.parse((await raw(port,{pathname:'/api/state'})).body).coach;
   assert.deepEqual([c.enabled,c.model,c.effort],[true,'claude-sonnet-5-5','medium']);
  }finally{await srv.stop()}
+});
+
+// ---- screenshot reading ----
+const PNG=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/5u8AAAAASUVORK5CYII=','base64');
+const reading=(over={})=>({seen:'Character sheet',notes:'Armor value partly hidden',name:null,realm:null,zone:null,level:null,xp:null,xpMax:null,gold:null,strength:null,agility:null,stamina:null,intellect:null,spirit:null,health:null,mana:null,attackPower:null,armor:null,weaponDps:null,weaponSpeed:null,unspentTalents:null,talents:null,abilities:[],gear:[],...over});
+
+test('screenshot reading: proposes only valid, changed values and saves nothing by itself',async()=>{
+ const store=bindings(path.join(tmp,'reader'));const seenArgs=[];let next=reading();
+ const coach=async()=>({text:'x',model:'claude-sonnet-5-5',usage:{}});coach.config={model:'claude-sonnet-5-5',effort:'medium'};
+ coach.read=async args=>{seenArgs.push(args);await new Promise(r=>setTimeout(r,40));if(next instanceof Error)throw next;return {data:next,model:'claude-sonnet-5-5',usage:{}}};
+ const env={DB:store.DB,BUCKET:store.BUCKET,COACH:coach,COACH_DAILY_LIMIT:'5'};const call=workerCall(env);
+ const upload=async(owner='qa-owner')=>{const f=new FormData();f.set('file',new File([PNG],'sheet.png',{type:'image/png'}));
+  const res=await worker.fetch(new Request('https://test.local/api/screenshots',{method:'POST',headers:{'oai-authenticated-user-id':owner,'oai-authenticated-user-email':'qa@example.test',Origin:'https://test.local'},body:f}),env);return (await res.json()).screenshots[0].id};
+ await call('/api/profile','PUT',{profile,revision:0});
+ const id=await upload();
+
+ assert.equal((await workerCall({DB:store.DB,BUCKET:store.BUCKET})('/api/screenshots/read?id='+id,'POST',{})).status,503);
+ assert.equal((await call('/api/screenshots/read?id=nope','POST',{})).status,404);
+ await call('/api/profile','PUT',{profile,revision:0},'other-owner');
+ assert.equal((await call('/api/screenshots/read?id='+id,'POST',{},'other-owner')).status,404);
+ assert.equal(seenArgs.length,0);
+
+ next=reading({name:'Coach QA',level:15,xp:500,xpMax:9000,gold:3,strength:42,stamina:-5,armor:1e12,unspentTalents:2.5,zone:'  Redridge Mountains ',
+  abilities:['Holy Strike','Seal of Righteousness','seal of righteousness',''],gear:[{slot:'Main hand',item:'Rusty Hatchet'},{slot:'Chest',item:'Militia Chain Vest'},{slot:'Pocket',item:'Lint'}],talents:'Benediction 2/5'});
+ let r=await call('/api/screenshots/read?id='+id,'POST',{});
+ assert.equal(r.status,200);
+ assert.deepEqual(r.body.reading.patch,{zone:'Redridge Mountains',talents:'Benediction 2/5',level:15,xp:500,xpMax:9000,strength:42,abilities:'Holy Light\nJudgement\nHoly Strike\nSeal of Righteousness',gear:{Chest:'Militia Chain Vest'}});
+ assert.equal(r.body.reading.seen,'Character sheet');assert.equal(r.body.reading.notes,'Armor value partly hidden');assert.equal(r.body.reading.name,'sheet.png');
+ assert.equal(r.body.state.profile.level,14);assert.equal(r.body.state.revision,1);// nothing saved
+ assert.equal(r.body.state.coach.usedToday,1);assert.equal(r.body.state.coach.messages.length,0);
+ assert.equal(seenArgs[0].mime,'image/png');assert.ok(Buffer.from(seenArgs[0].bytes).equals(PNG));
+
+ next=reading({abilities:['Holy','Judgement']});// a shorter name is new; an exact match is not
+ assert.deepEqual((await call('/api/screenshots/read?id='+id,'POST',{})).body.reading.patch,{abilities:'Holy Light\nJudgement\nHoly Strike\nHoly'});
+ next=reading({xp:9000,xpMax:9000});// impossible pair is dropped
+ assert.deepEqual((await call('/api/screenshots/read?id='+id,'POST',{})).body.reading.patch,{});
+ next=reading({level:15});
+ const two=await Promise.all([call('/api/screenshots/read?id='+id,'POST',{}),call('/api/coach','POST',{question:'hi'})]);
+ assert.deepEqual(two.map(x=>x.status).sort(),[200,409]);// one AI request at a time
+ const e=new Error('The AI declined to read this screenshot. Try a different one.');e.status=502;e.expose=true;next=e;
+ r=await call('/api/screenshots/read?id='+id,'POST',{});assert.equal(r.status,502);assert.match(r.body.error,/declined to read/);
+ assert.equal((await call('/api/screenshots/read?id='+id,'POST',{})).status,429);// 5 attempts used, failures included
+ assert.equal((await call('/api/state')).body.profile.level,14);
+ store.close();
+});
+
+test('screenshot reader sends the image to Sonnet 5.5 at medium effort with a JSON schema',async()=>{
+ let mode='ok';
+ const api=await fakeApi(()=>mode==='refuse'?[200,message({content:[],stop_reason:'refusal',stop_details:{type:'refusal',category:'general_harms',explanation:'x'}})]:mode==='garbage'?[200,message({content:[{type:'text',text:'not json'}]})]:[200,message({content:[{type:'thinking',thinking:'',signature:'s'},{type:'text',text:JSON.stringify(reading({level:22}))}]})]);
+ try{
+  const coach=createCoach({apiKey:'sk-ant-test',baseURL:api.url});
+  const out=await coach.read({bytes:PNG,mime:'image/png'});
+  assert.equal(out.data.level,22);assert.equal(out.model,'claude-sonnet-5-5');
+  const b=api.requests[0].body;
+  assert.equal(b.model,'claude-sonnet-5-5');assert.equal(b.output_config.effort,'medium');assert.equal(b.fallbacks,'default');
+  assert.equal(b.output_config.format.type,'json_schema');
+  const sch=b.output_config.format.schema;assert.equal(sch.additionalProperties,false);
+  assert.deepEqual([...sch.required].sort(),Object.keys(sch.properties).sort());
+  assert.deepEqual(b.messages[0].content[0],{type:'image',source:{type:'base64',media_type:'image/png',data:PNG.toString('base64')}});
+  assert.equal(b.messages[0].content[1].type,'text');
+  for(const banned of ['thinking','temperature','top_p','top_k','tool_choice'])assert.equal(b[banned],undefined,banned);
+  mode='refuse';await assert.rejects(coach.read({bytes:PNG,mime:'image/png'}),e=>e.expose&&/declined to read/.test(e.message));
+  mode='garbage';await assert.rejects(coach.read({bytes:PNG,mime:'image/png'}),e=>e.expose&&/unreadable result/.test(e.message));
+ }finally{api.server.close()}
+});
+
+test('coach can search the web: capped tools sent, paused turns resumed, sources listed',async()=>{
+ let calls=0;
+ const api=await fakeApi(rec=>{calls++;
+  if(calls===1)return [200,message({stop_reason:'pause_turn',content:[{type:'text',text:'Checking current guides. '},{type:'server_tool_use',id:'srvtoolu_1',name:'web_search',input:{query:'wow forever paladin'}}]})];
+  return [200,message({content:[{type:'web_search_tool_result',tool_use_id:'srvtoolu_1',content:[{type:'web_search_result',url:'https://example.test/other',title:'Other page',encrypted_content:'x',page_age:null}]},
+   {type:'text',text:'Train Holy Strike at level 6'},{type:'text',text:' per the class notes.',citations:[{type:'web_search_result_location',url:'https://news.blizzard.com/paladin',title:'Paladin deep dive',cited_text:'x',encrypted_index:'y'},{type:'web_search_result_location',url:'javascript:alert(1)',title:'bad',cited_text:'x',encrypted_index:'y'}]}]})]});
+ const prev=process.env.PALADIN_COACH_WEB;
+ try{
+  delete process.env.PALADIN_COACH_WEB;
+  const coach=createCoach({apiKey:'sk-ant-test',baseURL:api.url});assert.equal(coach.config.web,true);
+  const out=await coach({briefing:'b',history:[],question:'When do I get Holy Strike?'});
+  assert.equal(calls,2);
+  const [first,second]=api.requests.map(r=>r.body);
+  assert.deepEqual(first.tools,[{type:'web_search_20260209',name:'web_search',max_uses:5},{type:'web_fetch_20260209',name:'web_fetch',max_uses:5}]);
+  assert.equal(first.model,'claude-sonnet-5-5');assert.equal(first.output_config.effort,'medium');
+  assert.deepEqual(second.messages.map(m=>m.role),['user','assistant']);
+  assert.equal(second.messages[1].content[1].type,'server_tool_use');
+  assert.match(out.text,/^Checking current guides\. Train Holy Strike at level 6 per the class notes\./);
+  assert.match(out.text,/\*\*Sources\*\*\n- Paladin deep dive: https:\/\/news\.blizzard\.com\/paladin$/);
+  assert.doesNotMatch(out.text,/javascript:|example\.test/);
+  assert.deepEqual(out.usage,{input:1800,output:240});
+
+  process.env.PALADIN_COACH_WEB='off';calls=5;
+  const plain=createCoach({apiKey:'sk-ant-test',baseURL:api.url});assert.equal(plain.config.web,false);
+  await plain({briefing:'b',history:[],question:'q'});
+  assert.equal(api.requests.at(-1).body.tools,undefined);
+ }finally{if(prev===undefined)delete process.env.PALADIN_COACH_WEB;else process.env.PALADIN_COACH_WEB=prev;api.server.close()}
+});
+
+test('a turn that keeps pausing stops after the continuation limit',async()=>{
+ const api=await fakeApi(()=>[200,message({stop_reason:'pause_turn',content:[{type:'text',text:'Still looking. '},{type:'server_tool_use',id:'s',name:'web_search',input:{query:'q'}}]})]);
+ try{
+  const out=await createCoach({apiKey:'sk-ant-test',baseURL:api.url})({briefing:'b',history:[],question:'q'});
+  assert.equal(api.requests.length,2);// first call + 1 continuation
+  assert.match(out.text,/web lookup ran long/);
+ }finally{api.server.close()}
 });
